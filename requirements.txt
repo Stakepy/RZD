@@ -1,0 +1,5 @@
+pytz
+discord.py
+python-dotenv
+discord-components
+PyNaCl
