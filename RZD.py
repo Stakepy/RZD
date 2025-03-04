@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 from discord.ui import Select, View
 import asyncio
@@ -19,101 +19,33 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Конфигурационные константы
-GUILD_MAIN = 1225075859333845154  # ID основного сервера
-VOICE_MAIN = 1289694911234310155  # ID основного голосового канала
-TEXT_CHANNEL_MAIN = 1345863315569512558  # ID основного текстового канала
-ROLE_CITIZEN = 1289911579097436232  # ID роли "Гражданство"
+GUILD_MAIN = 1225075859333845154
+VOICE_MAIN = 1289694911234310155
+TEXT_CHANNEL_MAIN = 1345863315569512558
+ROLE_CITIZEN = 1289911579097436232
 
-# Другие серверы {guild_id: voice_channel_id}
 OTHER_SERVERS = {
     1119377303198236784: 1288580688420802622,
     1284541768888487966: 1345775160292020348,
     1346215194933592107: 1346215196250734757,
 }
 
-# Глобальные переменные
-active_connections = {}  # Активные голосовые подключения
-
 
 async def play_sound_effect(guild, filename):
-    """Воспроизведение звукового эффекта в указанной гильдии"""
+    """Воспроизведение звукового эффекта"""
     try:
         if guild.voice_client and guild.voice_client.is_connected():
             source = discord.FFmpegPCMAudio(filename)
             guild.voice_client.play(source)
-            await asyncio.sleep(3)  # Ожидание завершения воспроизведения
+            await asyncio.sleep(3)
     except Exception as e:
         print(f"Ошибка воспроизведения звука на {guild.id}: {e}")
 
 
-async def check_voice_connections():
-    """Периодическая проверка и восстановление подключений"""
-    while True:
-        await asyncio.sleep(10)  # Проверка каждые 10 секунд
-
-        # Проверяем все целевые серверы
-        for guild_id in [GUILD_MAIN] + list(OTHER_SERVERS.keys()):
-            guild = bot.get_guild(guild_id)
-            if not guild:
-                continue
-
-            # Определяем правильный канал для сервера
-            correct_voice_id = OTHER_SERVERS.get(guild_id) if guild_id != GUILD_MAIN else VOICE_MAIN
-            if not correct_voice_id:
-                continue
-
-            voice_channel = guild.get_channel(correct_voice_id)
-            current_voice = guild.voice_client
-
-            # Проверка подключения
-            if current_voice:
-                # Проверка соответствия канала и состояния подключения
-                if current_voice.channel.id != correct_voice_id or not current_voice.is_connected():
-                    try:
-                        await current_voice.disconnect()
-                        print(f"Отключен от неверного канала на сервере {guild_id}")
-                    except:
-                        pass
-                    current_voice = None
-
-            # Подключение если отсутствует
-            if not current_voice and voice_channel:
-                try:
-                    await voice_channel.connect()
-                    print(f"Восстановлено подключение к серверу {guild_id}")
-                    await asyncio.sleep(1)  # Задержка между подключениями
-                except Exception as e:
-                    print(f"Ошибка восстановления подключения к {guild_id}: {e}")
-
-
-@bot.event
-async def on_ready():
-    """Обработчик события запуска бота"""
-    print(f'Бот авторизован как {bot.user}')
-
-    # Синхронизация команд с Discord
-    try:
-        synced = await bot.tree.sync()
-        print(f"Синхронизировано {len(synced)} команд")
-    except Exception as e:
-        print(f"Ошибка синхронизации команд: {e}")
-
-    # Подключение ко всем голосовым каналам
-    await connect_to_all_voices()
-
-    # Запуск фоновой задачи проверки подключений
-    bot.loop.create_task(check_voice_connections())
-
-    # Воспроизведение звука запуска
-    for guild_id in [GUILD_MAIN, *OTHER_SERVERS.keys()]:
-        guild = bot.get_guild(guild_id)
-        if guild:
-            await play_sound_effect(guild, 'sound.mp3')
-
-
-async def connect_to_all_voices():
-    """Подключение ко всем указанным голосовым каналам"""
-    for guild_id, voice_id in [*OTHER_SERVERS.items(), (GUILD_MAIN, VOICE_MAIN)]:
+@tasks.loop(seconds=10)
+async def voice_control():
+    """Основной цикл контроля голосовых подключений"""
+    for guild_id, voice_id in {GUILD_MAIN: VOICE_MAIN, **OTHER_SERVERS}.items():
         guild = bot.get_guild(guild_id)
         if not guild:
             continue
@@ -122,55 +54,72 @@ async def connect_to_all_voices():
         if not voice_channel:
             continue
 
-        try:
-            # Отключение существующего подключения
-            if guild.voice_client:
-                await guild.voice_client.disconnect()
+        vc = guild.voice_client
 
-            # Новое подключение
-            vc = await voice_channel.connect()
-            active_connections[guild_id] = vc
-            await asyncio.sleep(1)  # Задержка между подключениями
-        except Exception as e:
-            print(f"Ошибка подключения к {guild_id}: {e}")
+        # Проверка текущего состояния
+        if vc:
+            if vc.channel.id != voice_id or not vc.is_connected():
+                try:
+                    await vc.disconnect()
+                except:
+                    pass
+                vc = None
+
+        if not vc:
+            try:
+                await voice_channel.connect(reconnect=True, timeout=30)
+                print(f"Успешное подключение к {guild.name}")
+                await play_sound_effect(guild, 'sound.mp3')
+            except Exception as e:
+                print(f"Ошибка подключения к {guild.name}: {str(e)}")
+                await asyncio.sleep(5)
+
+
+@voice_control.before_loop
+async def before_voice_control():
+    await bot.wait_until_ready()
+
+
+@bot.event
+async def on_ready():
+    """Обработчик запуска бота"""
+    print(f'Бот {bot.user} успешно запущен!')
+
+    try:
+        await bot.tree.sync()
+        print("Команды синхронизированы")
+    except Exception as e:
+        print(f"Ошибка синхронизации: {e}")
+
+    voice_control.start()
 
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    """Обработчик изменения голосового статуса"""
-    if member == bot.user:
-        guild = member.guild  # Получаем гильдию, где произошло изменение
-        guild_id = guild.id
+    """Обработчик изменений в голосовых каналах"""
+    if member.id == bot.user.id:
+        guild = member.guild
+        target_channel_id = OTHER_SERVERS.get(guild.id) or VOICE_MAIN
 
-        if guild_id in active_connections:
-            vc = active_connections[guild_id]
-            if not vc.is_connected():
-                del active_connections[guild_id]
-                # Подключаемся только к голосовому каналу на этом сервере
-                voice_id = OTHER_SERVERS.get(guild_id) or VOICE_MAIN
+        # Если бота переместили или отключили
+        if not after.channel or after.channel.id != target_channel_id:
+            await asyncio.sleep(2)
+            voice_channel = guild.get_channel(target_channel_id)
 
-                voice_channel = guild.get_channel(voice_id)
-                if voice_channel:
-                    try:
-                        # Отключение существующего подключения (если есть)
-                        if guild.voice_client:
-                            await guild.voice_client.disconnect()
-
-                        # Новое подключение
-                        vc = await voice_channel.connect()
-                        active_connections[guild_id] = vc
-                        print(f"Переподключено к голосовому каналу на сервере {guild_id}")
-
-                    except Exception as e:
-                        print(f"Ошибка переподключения к {guild_id}: {e}")
+            if voice_channel and not guild.voice_client:
+                try:
+                    await voice_channel.connect(reconnect=True)
+                    print(f"Экстренное переподключение к {guild.name}")
+                except Exception as e:
+                    print(f"Ошибка экстренного подключения: {e}")
 
 
 class ServerSelect(Select):
-    """Кастомный селектор для выбора сервера"""
+    """Селектор серверов для путешествий"""
 
     def __init__(self, options):
         super().__init__(
-            placeholder="Выберите сервер назначения...",
+            placeholder="🌍 Выберите сервер назначения...",
             min_values=1,
             max_values=1,
             options=options
@@ -179,65 +128,50 @@ class ServerSelect(Select):
     async def callback(self, interaction):
         try:
             await interaction.message.delete()
-        except discord.errors.NotFound:
-            pass  # Сообщение уже удалено или недоступно
+        except:
+            pass
+
         target_guild = bot.get_guild(int(self.values[0]))
 
-        # Воспроизведение звуковых эффектов
+        # Воспроизведение звука
         await play_sound_effect(interaction.guild, 'sound.mp3')
-        await play_sound_effect(target_guild, 'sound.mp3')
+        if target_guild:
+            await play_sound_effect(target_guild, 'sound.mp3')
 
         # Создание приглашения
         try:
             invite = await target_guild.text_channels[0].create_invite(max_uses=1)
-            await interaction.user.send(f"Ваш билет: {invite.url}")
+            await interaction.user.send(f"🚀 Ваш билет: {invite.url}")
         except Exception as e:
-            print(f"Ошибка выдачи билета: {e}")
-
-        # Очистка сообщений
-        await interaction.channel.purge(limit=1)
+            print(f"Ошибка создания приглашения: {e}")
 
 
 @bot.tree.command(name="trip", description="Начать межсерверное путешествие")
 @app_commands.guild_only()
 async def trip_command(interaction: discord.Interaction):
-    """Обработчик команды /trip"""
-    is_main_guild = interaction.guild_id == GUILD_MAIN
+    """Команда для путешествий"""
+    is_main = interaction.guild_id == GUILD_MAIN
     options = []
 
     # Проверки для основного сервера
-    if is_main_guild:
-        # Проверка роли
+    if is_main:
         if not interaction.user.get_role(ROLE_CITIZEN):
             return await interaction.response.send_message(
-                "⛔ Требуется роль Гражданства!",
-                ephemeral=True
-            )
+                "⛔ Требуется гражданство!", ephemeral=True)
 
-        # Проверка голосового канала
         voice_state = interaction.user.voice
         if not voice_state or voice_state.channel.id != VOICE_MAIN:
             return await interaction.response.send_message(
-                "⛔ Вы должны находиться в основном войсе!",
-                ephemeral=True
-            )
+                "⛔ Вы должны быть в основном войсе!", ephemeral=True)
 
-        # Проверка текстового канала
         if interaction.channel_id != TEXT_CHANNEL_MAIN:
             return await interaction.response.send_message(
-                "⛔ Используйте предназначенный для этого канал!",
-                ephemeral=True
-            )
+                "⛔ Неправильный канал!", ephemeral=True)
 
-    # Формирование списка доступных серверов
-    target_servers = [GUILD_MAIN]  # По умолчанию только основной сервер
-
-    # Если команда вызвана на основном сервере - добавляем все сервера
-    if is_main_guild:
-        target_servers = [*OTHER_SERVERS.keys(), GUILD_MAIN]
+    # Формирование списка серверов
+    target_servers = list(OTHER_SERVERS.keys()) + [GUILD_MAIN] if is_main else [GUILD_MAIN]
 
     for guild_id in target_servers:
-        # Пропускаем текущий сервер
         if guild_id == interaction.guild_id:
             continue
 
@@ -245,20 +179,11 @@ async def trip_command(interaction: discord.Interaction):
         if not guild:
             continue
 
-        # Проверка наличия пользователя на сервере
         try:
-            member = await guild.fetch_member(interaction.user.id)
-            if member:
+            if await guild.fetch_member(interaction.user.id):
                 continue
-        except discord.NotFound:
-            pass  # Пользователь не состоит на сервере
-        except discord.Forbidden:
-            print(f"Нет прав для проверки участника на сервере {guild.id}")
-            continue
-
-        # Добавляем только основной сервер если команда вызвана не на основном
-        if not is_main_guild and guild_id != GUILD_MAIN:
-            continue
+        except:
+            pass
 
         options.append(discord.SelectOption(
             label=guild.name,
@@ -268,21 +193,14 @@ async def trip_command(interaction: discord.Interaction):
 
     if not options:
         return await interaction.response.send_message(
-            "⛔ Нет доступных серверов для путешествия!",
-            ephemeral=True
-        )
+            "⛔ Нет доступных серверов!", ephemeral=True)
 
-    # Создание интерфейса выбора
-    select = ServerSelect(options)
-    view = View()
-    view.add_item(select)
-
+    # Отправка интерфейса
+    view = View().add_item(ServerSelect(options))
     await interaction.response.send_message(
-        "🚂 Выберите сервер для путешествия:",
-        view=view,
-        ephemeral=True
-    )
+        "🚂 Выберите пункт назначения:", view=view, ephemeral=True)
 
 
 # Запуск бота
-bot.run(os.getenv('DISCORD_TOKEN'))
+if __name__ == "__main__":
+    bot.run(os.getenv('DISCORD_TOKEN'))
