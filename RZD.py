@@ -19,15 +19,16 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Конфигурационные константы
-GUILD_MAIN =   # ID основного сервера
-VOICE_MAIN =   # ID основного голосового канала
-TEXT_CHANNEL_MAIN =   # ID основного текстового канала
-ROLE_CITIZEN =   # ID роли "Гражданство"
+GUILD_MAIN = 1225075859333845154  # ID основного сервера
+VOICE_MAIN = 1289694911234310155  # ID основного голосового канала
+TEXT_CHANNEL_MAIN = 1345863315569512558  # ID основного текстового канала
+ROLE_CITIZEN = 1289911579097436232  # ID роли "Гражданство"
 
 # Другие серверы {guild_id: voice_channel_id}
 OTHER_SERVERS = {
-    : ,
-    : ,
+    1119377303198236784: 1288580688420802622,
+    1284541768888487966: 1345775160292020348,
+    1346215194933592107: 1346215196250734757,
 }
 
 # Глобальные переменные
@@ -45,6 +46,46 @@ async def play_sound_effect(guild, filename):
         print(f"Ошибка воспроизведения звука на {guild.id}: {e}")
 
 
+async def check_voice_connections():
+    """Периодическая проверка и восстановление подключений"""
+    while True:
+        await asyncio.sleep(10)  # Проверка каждые 10 секунд
+
+        # Проверяем все целевые серверы
+        for guild_id in [GUILD_MAIN] + list(OTHER_SERVERS.keys()):
+            guild = bot.get_guild(guild_id)
+            if not guild:
+                continue
+
+            # Определяем правильный канал для сервера
+            correct_voice_id = OTHER_SERVERS.get(guild_id) if guild_id != GUILD_MAIN else VOICE_MAIN
+            if not correct_voice_id:
+                continue
+
+            voice_channel = guild.get_channel(correct_voice_id)
+            current_voice = guild.voice_client
+
+            # Проверка подключения
+            if current_voice:
+                # Проверка соответствия канала и состояния подключения
+                if current_voice.channel.id != correct_voice_id or not current_voice.is_connected():
+                    try:
+                        await current_voice.disconnect()
+                        print(f"Отключен от неверного канала на сервере {guild_id}")
+                    except:
+                        pass
+                    current_voice = None
+
+            # Подключение если отсутствует
+            if not current_voice and voice_channel:
+                try:
+                    await voice_channel.connect()
+                    print(f"Восстановлено подключение к серверу {guild_id}")
+                    await asyncio.sleep(1)  # Задержка между подключениями
+                except Exception as e:
+                    print(f"Ошибка восстановления подключения к {guild_id}: {e}")
+
+
 @bot.event
 async def on_ready():
     """Обработчик события запуска бота"""
@@ -59,6 +100,9 @@ async def on_ready():
 
     # Подключение ко всем голосовым каналам
     await connect_to_all_voices()
+
+    # Запуск фоновой задачи проверки подключений
+    bot.loop.create_task(check_voice_connections())
 
     # Воспроизведение звука запуска
     for guild_id in [GUILD_MAIN, *OTHER_SERVERS.keys()]:
@@ -103,7 +147,7 @@ async def on_voice_state_update(member, before, after):
             if not vc.is_connected():
                 del active_connections[guild_id]
                 # Подключаемся только к голосовому каналу на этом сервере
-                voice_id = OTHER_SERVERS.get(guild_id) or VOICE_MAIN  # Используем VOICE_MAIN, если это основной сервер
+                voice_id = OTHER_SERVERS.get(guild_id) or VOICE_MAIN
 
                 voice_channel = guild.get_channel(voice_id)
                 if voice_channel:
@@ -119,7 +163,6 @@ async def on_voice_state_update(member, before, after):
 
                     except Exception as e:
                         print(f"Ошибка переподключения к {guild_id}: {e}")
-
 
 
 class ServerSelect(Select):
