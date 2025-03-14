@@ -141,7 +141,7 @@ class ServerSelect(Select):
         # Создание приглашения
         try:
             invite = await target_guild.text_channels[0].create_invite(max_uses=1)
-            await interaction.user.send(f"🚀 Ваш билет: {invite.url}")
+            await interaction.user.send(f"🎫 Ваш билет: {invite.url}")
         except Exception as e:
             print(f"Ошибка создания приглашения: {e}")
 
